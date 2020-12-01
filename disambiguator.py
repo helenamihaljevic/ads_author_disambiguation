@@ -1,35 +1,18 @@
-from itertools import product, combinations
-from os.path import join
+from itertools import combinations
 
-import numpy as np
 import pandas as pd
 from gensim.models.doc2vec import Doc2Vec
 
 from config import DIR_PATH, DIR_LABELED_DATA
 from modelling_config import PATH_TO_D2V_MODEL_ABSTRACTS, PATH_TO_D2V_MODEL_TITLES
-from utils.helpers import convert_to_set, is_missing, compute_diff, cosine_sim
-from utils.pipeline import fetch_author_block, add_coauthors, is_equal, is_equal_num, \
-    is_contained_set, author_signature, is_signature_compatible, are_name_parts_equal, keep_value, \
-    tokenize, fetch_block_sizes, is_intersection_nonempty, is_equal_or_nickname, compute_idf_sum_of_acronyms, \
-    extract_arxiv_classes, compute_idf_sum_of_arxiv_class, compare_existence, cosine_sim_doc2vec_abs, jaro_winkler_dist, \
-    is_in_specific_journal_subset, contains_word, are_middle_names_equal, textual_distance, phonetic_distance, \
-    extract_keywords, compute_idf_sum_of_keywords, are_signatures_compatible, extract_coauthors
+from utils.helpers import convert_to_set, compute_diff, cosine_sim
+from utils.pipeline import *
 from utils.text_proc import extract_name_parts, extract_acronyms, extract_middle_name_initial
 from utils.tf_idf import create_corpus_from_docs, create_corpus_from_docs_keywords, \
     extract_top_keywords, extract_top_ngrams
 
 
 class Disambiguator():
-    # TODO: experimental; should be extended by other ethnicities
-    chinese_surnames = ['wang', 'li', 'zhang', 'liu', 'chen', 'yang', 'huang', 'zhao', 'wu', 'zhou', 'xu', 'sun', 'ma',
-                        'zhu', 'hu', 'guo', 'he', 'lin', 'gao', 'luo', 'zheng', 'liang', 'xie', 'song', 'tang', 'xu',
-                        'deng', 'han', 'feng', 'cao', 'peng', 'zeng', 'xiao', 'tian', 'dong', 'pan', 'yuan', 'cai',
-                        'jiang', 'yu', 'yu', 'du', 'ye', 'cheng', 'wei', 'su', 'lu', 'ding', 'ren', 'lu', 'yao', 'shen',
-                        'zhong', 'jiang', 'cui', 'tan', 'lu', 'fan', 'wang', 'liao', 'shi', 'jin', 'wei', 'jia', 'xia',
-                        'fu', 'fang', 'zou', 'xiong', 'bai', 'meng', 'qin', 'qiu', 'hou', 'jiang', 'yin', 'xue', 'yan',
-                        'duan', 'lei', 'long', 'li', 'shi', 'tao', 'he', 'mao', 'hao', 'gu', 'gong', 'shao', 'wan',
-                        'qin', 'wu', 'qian', 'dai', 'yan', 'ou', 'mo', 'kong', 'xiang', 'chang']
-
     DOC2VEC_ABSTRACTS = Doc2Vec.load(PATH_TO_D2V_MODEL_ABSTRACTS)
     DOC2VEC_TITLES = Doc2Vec.load(PATH_TO_D2V_MODEL_TITLES)
     DOC2VEC_ABSTRACTS_EMPTY_VEC = DOC2VEC_TITLES.infer_vector([''])
@@ -126,7 +109,7 @@ class Disambiguator():
     def __init__(self, ai):
         # e.g. ai = 'miller.j
         self.ai = ai
-        # Stores document data as returned by db or file
+        # Stores document data from file
         self.block = None
         # Stores features (preprocessed data)
         self.attributes = pd.DataFrame()
@@ -135,22 +118,12 @@ class Disambiguator():
         self.pw_combs = None
         self.use_for_modelling = []
 
-    def populate_block(self, source, verbose=False):
-        if source == 'sql':
-            if verbose:
-                print('Populating block via SQL query against db')
-            self.block = fetch_author_block(self.ai)
-            self.block = add_coauthors(self.block)
-            self.block.insert(loc=0, column='aid', value=None)
-            self.block = self.block[self.block.columns[:]]
-        elif source == 'file':
-            if verbose:
-                print('Populating block from file')
-            datafile = join(DIR_PATH, DIR_LABELED_DATA, f'{self.ai}.xlsx')
-            self.block = pd.read_excel(datafile)
-        else:
-            print('Allowed values for source are: sql, file')
-            return
+    def populate_block(self, verbose=False):
+        if verbose:
+            print('Populating block from file')
+        datafile = join(DIR_PATH, DIR_LABELED_DATA, f'{self.ai}.xlsx')
+        self.block = pd.read_excel(datafile)
+
         # Reset index, sort by year, author
         self.block = self.block.sort_values(by=['year', 'author']).reset_index(drop=True)
         if verbose:
@@ -223,7 +196,7 @@ class Disambiguator():
             self.attributes['first_name'], self.attributes['middle_name'], self.attributes['middle_name_init'] = zip(
                 *self.block['author'].map(extract_name_parts))
 
-            self.use_for_modelling.extend(['last_name','first_name', 'middle_name', 'middle_name_init'])
+            self.use_for_modelling.extend(['last_name', 'first_name', 'middle_name', 'middle_name_init'])
 
     def _prepare_country(self):
         self.attributes['country'] = self.block['country'].map(convert_to_set)
@@ -342,7 +315,6 @@ class Disambiguator():
         self.use_for_modelling.extend(
             ['block_size', 'block_signature_diversity', 'all_sig_compatible', 'matching_signatures'])
 
-
     def _prepare_doc2vec_abstract(self):
         self.attributes['abstract_doc2vec'] = self.block['abstract'].map(tokenize)
         self.attributes['abstract_doc2vec'] = self.attributes['abstract_doc2vec'].map(
@@ -377,7 +349,8 @@ class Disambiguator():
         self.use_for_modelling.append('keywords')
 
     def _prepare_age(self):
-        self.attributes['age'] = 2018 - self.block['year']  # TODO: replace 2018 by this year in production or more recent data
+        self.attributes['age'] = 2018 - self.block[
+            'year']  # TODO: replace 2018 by this year in production or more recent data
         self.use_for_modelling.append('age')
 
     def _prepare_abstract_bool(self):
@@ -417,8 +390,26 @@ class Disambiguator():
         combs = pd.DataFrame(combs, columns=new_cols)
         return combs
 
+    # TODO: experimental; should be extended by other ethnicities
+    chinese_surnames = ['wang', 'li', 'zhang', 'liu', 'chen', 'yang', 'huang', 'zhao', 'wu', 'zhou', 'xu', 'sun', 'ma',
+                        'zhu', 'hu', 'guo', 'he', 'lin', 'gao', 'luo', 'zheng', 'liang', 'xie', 'song', 'tang', 'xu',
+                        'deng', 'han', 'feng', 'cao', 'peng', 'zeng', 'xiao', 'tian', 'dong', 'pan', 'yuan', 'cai',
+                        'jiang', 'yu', 'yu', 'du', 'ye', 'cheng', 'wei', 'su', 'lu', 'ding', 'ren', 'lu', 'yao', 'shen',
+                        'zhong', 'jiang', 'cui', 'tan', 'lu', 'fan', 'wang', 'liao', 'shi', 'jin', 'wei', 'jia', 'xia',
+                        'fu', 'fang', 'zou', 'xiong', 'bai', 'meng', 'qin', 'qiu', 'hou', 'jiang', 'yin', 'xue', 'yan',
+                        'duan', 'lei', 'long', 'li', 'shi', 'tao', 'he', 'mao', 'hao', 'gu', 'gong', 'shao', 'wan',
+                        'qin', 'wu', 'qian', 'dai', 'yan', 'ou', 'mo', 'kong', 'xiang', 'chang']
+
 
 TARGET = Disambiguator.target
 ALL_FEATURES = Disambiguator.all_features
 NUMERICAL_FEATURES = Disambiguator.numerical_features
 CATEGORICAL_FEATURES = [a for a in Disambiguator.all_features if a not in NUMERICAL_FEATURES]
+
+
+def fetch_block_sizes(quantiles=(0.5, 0.7, 0.9, 1.0)):
+    """Compute block size quantiles and return them as a dictionary"""
+    df = pd.read_csv(join(PATH_DATA, 'ai_block_sizes_entire_db.csv'))
+    block_size_quantiles = df[['count']].quantile(q=quantiles)
+
+    return block_size_quantiles.to_dict()['count']
