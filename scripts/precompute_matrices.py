@@ -1,14 +1,11 @@
 import sys
 import time
-
-from config import EXCEL_FILES
-from disambiguator import ALL_FEATURES
-from utils.modelling import load_ai_blocks, build_similarity_matrices, load_matrices
+from os.path import join, getmtime
 
 sys.path.append('../')
-
-from os.path import join, getmtime
-from config import DIR_PATH
+from config import DIR_PATH, EXCEL_FILES
+from disambiguator import ALL_FEATURES
+from utils.modelling import load_ai_blocks, build_similarity_matrices, load_matrices
 from utils.helpers import dump_pickle_file, extract_file_name_from_path
 
 import argparse
